@@ -26,14 +26,8 @@ extern struct string_pool_t *string_pool[STRING_POOL_TABLE_SIZE];
 extern void *string_mem;
 extern int string_mem_offset;
 
-// Initialize the string pool
-static inline void string_pool_init(void)
-{
-	string_mem = malloc(STRING_POOL_BLOCK_SIZE);
-}
-
-// Allocate a copy of a string
-static inline const char *alloc_string(const char *string)
+// Allocate a copy of a string, or return an existing copy
+static inline const char *copy_string(const char *string)
 {
 	// Hash the string
 	int hash = hash_string(string) & (STRING_POOL_TABLE_SIZE - 1);
@@ -52,7 +46,7 @@ static inline const char *alloc_string(const char *string)
 	length = (length + sizeof(void *) - 1) & ~(sizeof(void *) - 1);
 
 	// Try to allocate from current memory block, get a new block if full
-	if (string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {
+	if (!string_mem || string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {
 		string_mem = malloc(STRING_POOL_BLOCK_SIZE);
 		string_mem_offset = length;
 		current = string_mem;

@@ -40,7 +40,7 @@ static inline void *mempool_alloc(struct mempool_t *pool, size_t size)
 static inline void mempool_free(struct mempool_t *pool, void *ptr)
 {
 	// Just add the item back into the pool's free list
-	struct mempool_t current = ptr;
+	struct mempool_t *current = ptr;
 	current->next = pool->next;
 	pool->next = current;
 }

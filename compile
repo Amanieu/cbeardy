@@ -1,0 +1,1 @@
+gcc -Wall -Wextra -Winline -O3 -march=native -fomit-frame-pointer -combine -fwhole-program markov.c stringpool.c
