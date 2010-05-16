@@ -78,43 +78,34 @@ static inline struct markov_node_t *markov_add_exit(struct markov_node_t *node, 
 	}
 
 	// We need to add a new exit. See if we need to extend the node structure.
-	if (node->num_exits < 16) {
-		struct mempool_t *oldpool = &markov_nodepool_small[node->num_exits];
-		struct mempool_t *newpool = &markov_nodepool_small[node->num_exits + 1];
-		struct markov_node_t *newnode = mempool_alloc(newpool, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * (node->num_exits + 1));
-		memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits);
-		mempool_free(oldpool, node);
-		*insert = newnode;
-		node = newnode;
-	} else if ((node->num_exits & (node->num_exits - 1)) == 0) {
-		if (node->num_exits == 16) {
-			struct markov_node_t *newnode = mempool_alloc(&markov_nodepool_32, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 32);
+	if (node->num_exits <= 16 || (node->num_exits & (node->num_exits - 1)) == 0) {
+		struct markov_node_t *newnode;
+		if (node->num_exits < 16) {
+			struct mempool_t *oldpool = &markov_nodepool_small[node->num_exits];
+			struct mempool_t *newpool = &markov_nodepool_small[node->num_exits + 1];
+			newnode = mempool_alloc(newpool, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * (node->num_exits + 1));
+			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits);
+			mempool_free(oldpool, node);
+		} else if (node->num_exits == 16) {
+			newnode = mempool_alloc(&markov_nodepool_32, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 32);
 			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 16);
 			mempool_free(&markov_nodepool_small[16], node);
-			*insert = newnode;
-			node = newnode;
 		} else if (node->num_exits == 32) {
-			struct markov_node_t *newnode = mempool_alloc(&markov_nodepool_64, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 64);
+			newnode = mempool_alloc(&markov_nodepool_64, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 64);
 			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 32);
 			mempool_free(&markov_nodepool_32, node);
-			*insert = newnode;
-			node = newnode;
 		} else if (node->num_exits == 64) {
-			struct markov_node_t *newnode = mempool_alloc(&markov_nodepool_128, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 128);
+			newnode = mempool_alloc(&markov_nodepool_128, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 128);
 			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 64);
 			mempool_free(&markov_nodepool_64, node);
-			*insert = newnode;
-			node = newnode;
 		} else if (node->num_exits == 128) {
-			struct markov_node_t *newnode = malloc(sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 256);
+			newnode = malloc(sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 256);
 			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 128);
 			mempool_free(&markov_nodepool_128, node);
-			*insert = newnode;
-			node = newnode;
-		} else {
-			node = realloc(node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits * 2);
-			*insert = node;
-		}
+		} else
+			newnode = realloc(node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits * 2);
+		*insert = newnode;
+		node = newnode;
 	}
 
 	// Now just add an exit at the end
