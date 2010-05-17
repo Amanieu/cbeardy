@@ -232,7 +232,8 @@ void markov_print(void)
 	}
 }
 
-// Main test function
+// Main function, reads each line from the standard input as a word. Empty lines
+// delimit a sentence.
 int main(void)
 {
 	markov_init();
@@ -240,6 +241,10 @@ int main(void)
 	int length = 0;
 	char buffer[1024];
 	while (fgets(buffer, sizeof(buffer), stdin)) {
+		if (buffer[strlen(buffer) - 1] != '\n') {
+			printf("Word too long\n");
+			return 1;
+		}
 		if (buffer[0] == '\n') {
 			markov_train(length, sentence);
 			markov_print();
@@ -247,6 +252,10 @@ int main(void)
 		} else {
 			buffer[strlen(buffer) - 1] = '\0';
 			sentence[length++] = copy_string(buffer);
+			if (length == 256) {
+				printf("Sentence too long\n");
+				return 1;
+			}
 		}
 	}
 
