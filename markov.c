@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "hash.h"
 #include "mempool.h"
 #include "stringpool.h"
@@ -11,7 +12,7 @@
 #define MARKOV_TABLE_SIZE 0x100000
 
 // Initial allocation for start nodes list
-#define MARKOV_START_NODES_SIZE 1048576
+#define MARKOV_START_NODES_SIZE 0x80000
 
 // An exit for a node in a markov chain
 struct markov_node_t;
@@ -25,64 +26,62 @@ struct markov_node_t {
 	struct markov_node_t *next;
 	const char *strings[MARKOV_ORDER];
 	int num_exits;
-	struct markov_exit_t exits[0];
+	struct markov_exit_t *exits;
 };
 
 // Hash table of markov chain nodes
-static struct markov_node_t *markov_table[STRING_POOL_TABLE_SIZE] = {NULL};
+static struct markov_node_t *markov_table[MARKOV_TABLE_SIZE];
 
 // List of start nodes
 static struct markov_exit_t *markov_start_nodes = NULL;
 static int markov_num_start_nodes = 0;
 
-// Memory pools for nodes with 0 to 16 elements
-static struct mempool_t markov_nodepool_small[17];
+// Memory pool for the node structure
+static struct mempool_t markov_nodepool;
 
-// Memory pools for nodes with 32, 64 and 128 elements.
-static struct mempool_t markov_nodepool_32;
-static struct mempool_t markov_nodepool_64;
-static struct mempool_t markov_nodepool_128;
+// Memory pools for exits with 1 to 16 elements
+static struct mempool_t markov_exitpool_small[16];
+
+// Memory pools for exits with 32, 64 and 128 elements
+static struct mempool_t markov_exitpool_32;
+static struct mempool_t markov_exitpool_64;
+static struct mempool_t markov_exitpool_128;
 
 // Search the hash table for a node. Allocates a new node if one wasn't found.
-// All strings should have been allocated using copy_string(). Also returns a
-// pointer to the insertion point of this node. This is the pointer that must be
-// modified if the node is moved.
-static inline struct markov_node_t *markov_get_node(const char *const *strings, struct markov_node_t ***insert)
+// All strings should have been allocated using copy_string().
+static inline struct markov_node_t *markov_get_node(const char *const *strings)
 {
-	int hash = hash_strings(MARKOV_ORDER, strings);
+	int hash = hash_strings(MARKOV_ORDER, strings) & (MARKOV_TABLE_SIZE - 1);
 
-	if (insert)
-		*insert = &markov_table[hash];
-
-	struct markov_node_t *current;
-	for (current = markov_table[hash]; current; current = current->next) {
+	// Search the hash table for the node
+	struct markov_node_t *node;
+	for (node = markov_table[hash]; node; node = node->next) {
 		int i;
 		for (i = 0; i < MARKOV_ORDER; i++) {
-			if (current->strings[i] != strings[i])
+			if (node->strings[i] != strings[i])
 				break;
 		}
 
 		if (i == MARKOV_ORDER)
-			return current;
-		else if (insert)
-			*insert = &current->next;
+			return node;
 	}
 
 	// Allocate a new node
-	current = mempool_alloc(&markov_nodepool_small[0], sizeof(struct markov_node_t));
-	current->next = NULL;
-	current->num_exits = 0;
+	node = mempool_alloc(&markov_nodepool, sizeof(struct markov_node_t));
+	node->num_exits = 0;
+	node->exits = NULL;
 	int i;
 	for (i = 0; i < MARKOV_ORDER; i++)
-		current->strings[i] = strings[i];
-	**insert = current;
-	return current;
+		node->strings[i] = strings[i];
+	node->next = markov_table[hash];
+	markov_table[hash] = node;
+	return node;
 }
 
-// Add an exit to a node. You must provide the insertion point of the node.
-static inline void markov_add_exit(struct markov_node_t *node, struct markov_node_t **insert, struct markov_node_t *exit)
+// Add an exit to a node
+static inline void markov_add_exit(struct markov_node_t *node, struct markov_node_t *exit)
 {
-	// First see if the node already has this exit
+	// First see if we already have this exit
 	int i;
 	for (i = 0; i < node->num_exits; i++) {
 		if (node->exits[i].node == exit) {
@@ -91,35 +90,36 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 		}
 	}
 
-	// We need to add a new exit. See if we need to extend the node structure.
-	if (node->num_exits <= 16 || (node->num_exits & (node->num_exits - 1)) == 0) {
-		struct markov_node_t *newnode;
-		if (node->num_exits < 16) {
-			struct mempool_t *oldpool = &markov_nodepool_small[node->num_exits];
-			struct mempool_t *newpool = &markov_nodepool_small[node->num_exits + 1];
-			newnode = mempool_alloc(newpool, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * (node->num_exits + 1));
-			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits);
-			mempool_free(oldpool, node);
+	// We need to add a new exit. See if we need to extend the exit list.
+	if (node->num_exits <= 16 || is_power_of_2(node->num_exits)) {
+		struct markov_exit_t *newexits;
+		if (node->num_exits == 0) {
+			newexits = mempool_alloc(&markov_exitpool_small[0], sizeof(struct markov_exit_t));
+		} else if (node->num_exits < 16) {
+			struct mempool_t *oldpool = &markov_exitpool_small[node->num_exits - 1];
+			struct mempool_t *newpool = &markov_exitpool_small[node->num_exits];
+			newexits = mempool_alloc(newpool, sizeof(struct markov_exit_t) * (node->num_exits + 1));
+			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * node->num_exits);
+			mempool_free(oldpool, node->exits);
 		} else if (node->num_exits == 16) {
-			newnode = mempool_alloc(&markov_nodepool_32, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 32);
-			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 16);
-			mempool_free(&markov_nodepool_small[16], node);
+			newexits = mempool_alloc(&markov_exitpool_32, sizeof(struct markov_exit_t) * 32);
+			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 16);
+			mempool_free(&markov_exitpool_small[15], node->exits);
 		} else if (node->num_exits == 32) {
-			newnode = mempool_alloc(&markov_nodepool_64, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 64);
-			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 32);
-			mempool_free(&markov_nodepool_32, node);
+			newexits = mempool_alloc(&markov_exitpool_64, sizeof(struct markov_exit_t) * 64);
+			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 32);
+			mempool_free(&markov_exitpool_32, node->exits);
 		} else if (node->num_exits == 64) {
-			newnode = mempool_alloc(&markov_nodepool_128, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 128);
-			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 64);
-			mempool_free(&markov_nodepool_64, node);
+			newexits = mempool_alloc(&markov_exitpool_128, sizeof(struct markov_exit_t) * 128);
+			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 64);
+			mempool_free(&markov_exitpool_64, node->exits);
 		} else if (node->num_exits == 128) {
-			newnode = malloc(sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 256);
-			memcpy(newnode, node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * 128);
-			mempool_free(&markov_nodepool_128, node);
+			newexits = malloc(sizeof(struct markov_exit_t) * 256);
+			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 128);
+			mempool_free(&markov_exitpool_128, node->exits);
 		} else
-			newnode = realloc(node, sizeof(struct markov_node_t) + sizeof(struct markov_exit_t) * node->num_exits * 2);
-		*insert = newnode;
-		node = newnode;
+			newexits = realloc(node->exits, sizeof(struct markov_exit_t) * node->num_exits * 2);
+		node->exits = newexits;
 	}
 
 	// Now just add an exit at the end
@@ -128,29 +128,26 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 	node->exits[exit_id].count = 1;
 }
 
-// Add a node to the start of the chain. Returns the built node and its
-// insertion point.
-static inline struct markov_node_t *markov_add_start(const char *const *strings, struct markov_node_t ***insert)
+// Add a node to the start of the chain
+static inline void markov_add_start(struct markov_node_t *node)
 {
-	// Get a node for these strings
-	struct markov_node_t *node = markov_get_node(strings, insert);
-
 	// Look for an existing entry in the start list for this node
 	int i;
 	for (i = 0; i < markov_num_start_nodes; i++) {
 		if (markov_start_nodes[i].node == node) {
 			markov_start_nodes[i].count++;
-			return node;
+			return;
 		}
 	}
 
-	// Add new entry to start list
-	if (markov_num_start_nodes >= MARKOV_START_NODES_SIZE && (markov_num_start_nodes & (markov_num_start_nodes - 1)) == 0)
+	// Extend list if needed
+	if (markov_num_start_nodes >= MARKOV_START_NODES_SIZE && is_power_of_2(markov_num_start_nodes))
 		markov_start_nodes = realloc(markov_start_nodes, markov_num_start_nodes * 2);
+
+	// Add new entry to start list
 	int entry_id = markov_num_start_nodes++;
 	markov_start_nodes[entry_id].node = node;
 	markov_start_nodes[entry_id].count = 1;
-	return node;
 }
 
 // Train the markov model using the given sentence. All strings in the sentence
@@ -161,7 +158,7 @@ void markov_train(int length, const char *const *sentence)
 	if (!length)
 		return;
 
-	// Catch small sentences
+	// Handle sentences shorter than MARKOV_ORDER
 	if (length < MARKOV_ORDER) {
 		const char *buffer[MARKOV_ORDER];
 		int i;
@@ -169,38 +166,89 @@ void markov_train(int length, const char *const *sentence)
 			buffer[i] = sentence[i];
 		for (i = length; i < MARKOV_ORDER; i++)
 			buffer[i] = NULL;
-		struct markov_node_t **insert;
-		markov_add_start(buffer, &insert);
+		markov_add_start(markov_get_node(buffer));
 		return;
 	}
 
 	// Build first node
-	struct markov_node_t **insert;
-	struct markov_node_t *node = markov_add_start(sentence, &insert);
+	struct markov_node_t *node = markov_get_node(sentence);
+	markov_add_start(node);
 
 	// Build middle nodes
 	int i;
 	for (i = MARKOV_ORDER; i < length; i++) {
 		sentence++;
-		struct markov_node_t **nextinsert;
-		struct markov_node_t *nextnode = markov_get_node(sentence, &nextinsert);
-		markov_add_exit(node, insert, nextnode);
-		insert = nextinsert;
+		struct markov_node_t *nextnode = markov_get_node(sentence);
+		markov_add_exit(node, nextnode);
 		node = nextnode;
 	}
 
-	// Build end node
+	// Build last node
+	sentence++;
 	const char *buffer[MARKOV_ORDER];
 	for (i = 0; i < MARKOV_ORDER - 1; i++)
 		buffer[i] = sentence[i];
 	buffer[MARKOV_ORDER - 1] = NULL;
-	struct markov_node_t **nextinsert;
-	struct markov_node_t *nextnode = markov_get_node(buffer, &nextinsert);
-	markov_add_exit(node, insert, nextnode);
+	struct markov_node_t *nextnode = markov_get_node(buffer);
+	markov_add_exit(node, nextnode);
 }
 
 // Initialize various stuff
 void markov_init(void)
 {
-	markov_start_nodes = malloc(sizeof(struct markov_exit_t) * MARKOV_START_NODES_SIZE);
+	string_init();
+	markov_start_nodes = calloc(1, sizeof(struct markov_exit_t) * MARKOV_START_NODES_SIZE);
+}
+
+// Print the entire model
+void markov_print(void)
+{
+	printf("START\n");
+	int i;
+	for (i = 0; i < markov_num_start_nodes; i++) {
+		printf("  %d ->", markov_start_nodes[i].count);
+		int j;
+		for (j = 0; j < MARKOV_ORDER; j++)
+			printf(" %s", markov_start_nodes[i].node->strings[j]);
+		printf("\n");
+	}
+
+	for (i = 0; i < MARKOV_TABLE_SIZE; i++) {
+		struct markov_node_t *current;
+		for (current = markov_table[i]; current; current = current->next) {
+			printf("NODE");
+			int j;
+			for (j = 0; j < MARKOV_ORDER; j++)
+				printf(" %s", current->strings[j]);
+			printf("\n");
+			for (j = 0; j < current->num_exits; j++) {
+				printf("  %d ->", current->exits[j].count);
+				int k;
+				for (k = 0; k < MARKOV_ORDER; k++)
+					printf(" %s", current->exits[j].node->strings[k]);
+				printf("\n");
+			}
+		}
+	}
+}
+
+// Main test function
+int main(void)
+{
+	markov_init();
+	const char *sentence[256];
+	int length = 0;
+	char buffer[1024];
+	while (fgets(buffer, sizeof(buffer), stdin)) {
+		if (buffer[0] == '\n') {
+			markov_train(length, sentence);
+			markov_print();
+			length = 0;
+		} else {
+			buffer[strlen(buffer) - 1] = '\0';
+			sentence[length++] = copy_string(buffer);
+		}
+	}
+
+	return 0;
 }

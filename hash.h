@@ -22,6 +22,8 @@ static inline int hash_strings(int num_strings, const char *const *strings)
 	int i;
 	for (i = 0; i < num_strings; i++) {
 		const char *string = strings[i];
+		if (!string)
+			continue;
 		while ((c = *string++))
 			hash = (hash << 5) + hash + c;
 	}

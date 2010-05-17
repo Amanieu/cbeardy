@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "hash.h"
+#include "math.h"
 
 // Size of the string pool hash table
 #define STRING_POOL_TABLE_SIZE 0x80000
@@ -43,7 +44,7 @@ static inline const char *copy_string(const char *string)
 	int length = sizeof(struct string_pool_t) + strlen(string) + 1;
 
 	// Make sure length is properly aligned to machine word length
-	length = (length + sizeof(void *) - 1) & ~(sizeof(void *) - 1);
+	length = align(length, sizeof(void *));
 
 	// Try to allocate from current memory block, get a new block if full
 	if (string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {

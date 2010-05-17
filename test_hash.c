@@ -27,10 +27,9 @@ int main(int argc, char **argv)
 	int num_entries = 0;
 	char buffer[1024];
 	while (fgets(buffer, sizeof(buffer), stdin)) {
-		if (buffer[strlen(buffer) - 1] == '\n')
-			buffer[strlen(buffer) - 1] = '\0';
-		if (!buffer[0])
+		if (buffer[0] == '\n')
 			continue;
+		buffer[strlen(buffer) - 1] = '\0';
 		int hash = hash_string(buffer) & (table_size - 1);
 		struct entry *current = malloc(sizeof(struct entry) + strlen(buffer) + 1);
 		strcpy(current->string, buffer);
@@ -51,10 +50,10 @@ int main(int argc, char **argv)
 			max_depth = depth;
 		if (depth > 1) {
 			num_collisions += depth - 1;
-			/*printf("%d ", depth);
+			printf("%d ", depth);
 			for (current = table[i]; current; current = current->next)
 				printf("%s ", current->string);
-			printf("\n");*/
+			printf("\n");
 		}
 	}
 

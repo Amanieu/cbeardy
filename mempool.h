@@ -13,8 +13,24 @@ struct mempool_t {
 	struct mempool_t *next;
 };
 
+// Slow path: allocate a large memory block and split it
+static inline void *mempool_alloc_slow(struct mempool_t *pool, int size)
+{
+	int alloc_size = MEMPOOL_BLOCK_SIZE - (MEMPOOL_BLOCK_SIZE % size);
+	void *block = malloc(alloc_size);
+	void *pos;
+	for (pos = block; pos < block + alloc_size - size; pos += size) {
+		struct mempool_t *current = pos;
+		current->next = pool->next;
+		pool->next = current;
+	}
+
+	// Return the last element (which wasn't added to the pool)
+	return pos;
+}
+
 // Allocate an item from a memory pool
-static inline void *mempool_alloc(struct mempool_t *pool, size_t size)
+static inline void *mempool_alloc(struct mempool_t *pool, int size)
 {
 	// Fast path if there are items in the pool
 	if (pool->next) {
@@ -23,17 +39,7 @@ static inline void *mempool_alloc(struct mempool_t *pool, size_t size)
 		return current;
 	}
 
-	// Slow path: allocate a large memory block and split it
-	void *block = malloc(MEMPOOL_BLOCK_SIZE - (MEMPOOL_BLOCK_SIZE % size));
-	void *pos;
-	for (pos = block; pos < block + MEMPOOL_BLOCK_SIZE - size; pos += size) {
-		struct mempool_t *current = pos;
-		current->next = pool->next;
-		pool->next = current;
-	}
-
-	// Return the last element (which wasn't added to the pool)
-	return pos;
+	return mempool_alloc_slow(pool, size);
 }
 
 // Release an item back to a memory pool
