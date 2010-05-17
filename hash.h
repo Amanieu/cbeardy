@@ -14,14 +14,15 @@ static inline int hash_string(const char *string)
 }
 
 // Same as above, but hashes multiple strings
-static inline int hash_strings(int num_strings, const char **strings)
+static inline int hash_strings(int num_strings, const char *const *strings)
 {
 	unsigned int hash = 5381;
 	unsigned int c;
-	int i;
 
+	int i;
 	for (i = 0; i < num_strings; i++) {
-		while ((c = *strings[i]++))
+		const char *string = strings[i];
+		while ((c = *string++))
 			hash = (hash << 5) + hash + c;
 	}
 

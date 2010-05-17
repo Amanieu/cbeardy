@@ -46,7 +46,7 @@ static inline const char *copy_string(const char *string)
 	length = (length + sizeof(void *) - 1) & ~(sizeof(void *) - 1);
 
 	// Try to allocate from current memory block, get a new block if full
-	if (!string_mem || string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {
+	if (string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {
 		string_mem = malloc(STRING_POOL_BLOCK_SIZE);
 		string_mem_offset = length;
 		current = string_mem;
@@ -60,6 +60,12 @@ static inline const char *copy_string(const char *string)
 	strcpy(current->string, string);
 	string_pool[hash] = current;
 	return current->string;
+}
+
+// Initialize string pool
+static inline void string_init(void)
+{
+	string_mem = malloc(STRING_POOL_BLOCK_SIZE);
 }
 
 #endif
