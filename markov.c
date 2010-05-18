@@ -204,6 +204,12 @@ static inline void markov_train(int length, const char *const *sentence)
 	markov_add_exit(node, nextnode);
 }
 
+// Generate sentences using the current markov model
+static char *markov_generate()
+{
+	return "Hello, world!";
+}
+
 // Initialize various stuff
 static inline void markov_init(void)
 {
@@ -382,6 +388,8 @@ int main(void)
 			}
 		}
 	}
-
+	
+	printf("\n\n%s\n\n", markov_generate());
+	
 	return 0;
 }
