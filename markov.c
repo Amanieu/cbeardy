@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <signal.h>
+#include <assert.h>
 #include "hash.h"
 #include "math.h"
 #include "mempool.h"
@@ -15,6 +16,9 @@
 
 // Size of start node hash table
 #define MARKOV_START_SIZE 0x200000
+
+// Initial size of the string buffer when generating strings
+#define MARKOV_GENERATE_BUFFER_SIZE 512
 
 // An exit for a node in a markov chain
 struct markov_node_t;
@@ -218,10 +222,143 @@ static inline void markov_train(int length, const char *const *sentence)
 	markov_add_exit(node, nextnode);
 }
 
+// Picks a random start state, taking into account weightings based on frequency
+static struct markov_node_t *markov_generate_start_state(void)
+{
+	int i;
+	struct markov_start_t *current;
+	
+	int frequency_sum = 0;
+	
+	// Calculate the sum of the frequencies of the start table
+	for (i = 0; i < MARKOV_START_SIZE; i++) {
+		for (current = markov_start_table[i]; current; current = current->next) {
+			frequency_sum += current->count;
+		}
+	}
+	
+	// TODO: This is probably bad for a good number of reasons.
+	//       What should I be doing?
+	int frequency_threshold = rand()%frequency_sum;
+	
+	// Iterate through the data set until reaching the random threshold
+	frequency_sum = 0;
+	for (i = 0; i < MARKOV_START_SIZE; i++) {
+		for (current = markov_start_table[i]; current; current = current->next) {
+			frequency_sum += current->count;
+			
+			if (frequency_sum > frequency_threshold)
+				return current->node;
+		}
+	}
+	
+	// Shouldn't reach here as threshold should have been reached
+	assert(0);
+	return NULL;
+}
+
+// Picks a random exit state, taking into account weightings based on frequency.
+// Returns NULL if the state should be the END state.
+static struct markov_node_t *markov_generate_next_state(struct markov_node_t *current_node)
+{
+	if (current_node->strings[MARKOV_ORDER-1] == NULL)
+		return NULL;
+	
+	int i;
+	int frequency_sum = 0;
+	struct markov_exit_t *current_exit;
+	
+	// Calculate the sum of the frequencies of the start table
+	current_exit = current_node->exits;
+	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
+		frequency_sum += current_exit++->count;
+	}
+	
+	// TODO: This is probably bad for a good number of reasons.
+	//       What should I be doing?
+	int frequency_threshold = rand()%frequency_sum;
+	
+	// Iterate through the data set until reaching the random threshold
+	current_exit = current_node->exits;
+	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
+		frequency_sum += current_exit->count;
+		
+		if (frequency_sum > frequency_threshold)
+			return current_exit->node;
+	}
+	
+	// There were no exits!
+	return NULL;
+}
+
+// Appends a node's contents to a given buffer and returns a pointer to the
+// buffer incase it is extended.
+static char *markov_append_node_to_string(char *old_str,
+                                          int *buffer_size,
+                                          struct markov_node_t *node,
+                                          int only_print_last)
+{
+	// The index to start printing the strings in the node from
+	int print_from = only_print_last * (MARKOV_ORDER - 1);
+	
+	// Find the new required length for the string incase the buffer needs
+	// extending
+	size_t new_length;
+	new_length = strlen(old_str);
+	int i;
+	for (i = print_from; i < MARKOV_ORDER; i++) {
+		if (node->strings[i])
+			new_length += strlen(node->strings[i]) + 1;
+	}
+	
+	char *new_str;
+	
+	if ((int)new_length + 1 > *buffer_size) {
+		// If the new length is too big, double the buffer size
+		(*buffer_size) *= 2;
+		new_str = realloc(old_str, *buffer_size);
+	} else {
+		new_str = old_str;
+	}
+	
+	// Concatenate the new node's strings onto the end
+	for (i = print_from; i < MARKOV_ORDER; i++) {
+		if (node->strings[i]) {
+			strcat(new_str, node->strings[i]);
+			strcat(new_str, " ");
+		}
+	}
+	
+	return new_str;
+}
+
 // Generate sentences using the current markov model
 static char *markov_generate()
 {
-	return "Hello, world!";
+	// Create a buffer to put the output into
+	int buffer_size = MARKOV_GENERATE_BUFFER_SIZE;
+	char *output = malloc(MARKOV_GENERATE_BUFFER_SIZE);
+	*output = '\0';
+	
+	struct markov_node_t *start = markov_generate_start_state();
+	output = markov_append_node_to_string(output, &buffer_size, start, 0);
+	
+	int count = 0;
+	
+	struct markov_node_t *current_node = start;
+	while (current_node) {
+		count++;
+		if (count > 50) {
+			printf("!!!!!!!!!!!!!!!!!!!! Looping !!!!!!!!!!!!!!!!!!!!\n");
+			break;
+		}
+		
+		current_node = markov_generate_next_state(current_node);
+		if (current_node)
+			output = markov_append_node_to_string(output, &buffer_size, current_node, 1);
+	}
+	
+	return output;
 }
 
 // Initialize various stuff
@@ -405,7 +542,14 @@ int main(void)
 		}
 	}
 	
-	printf("\n\n%s\n\n", markov_generate());
+	printf("\n---\n");
+	int i;
+	for (i = 0; i < 100; i++) {
+		char *sentence = markov_generate();
+		printf("%s\n\n", sentence);
+		free(sentence);
+	}
+	printf("---\n");
 	
 	return 0;
 }
