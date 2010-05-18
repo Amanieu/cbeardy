@@ -5,12 +5,18 @@
 
 #include <stdlib.h>
 
+// Enable this to get statisics on memory pool usage
+#define MEMPOOL_STATS
+
 // Size of a block for mempool allocation
 #define MEMPOOL_BLOCK_SIZE 65536
 
 // A memory pool
 struct mempool_t {
 	struct mempool_t *next;
+#ifdef MEMPOOL_STATS
+	int count;
+#endif
 };
 
 // Slow path: allocate a large memory block and split it
@@ -32,6 +38,10 @@ static inline void *mempool_alloc_slow(struct mempool_t *pool, int size)
 // Allocate an item from a memory pool
 static inline void *mempool_alloc(struct mempool_t *pool, int size)
 {
+#ifdef MEMPOOL_STATS
+	pool->count++;
+#endif
+
 	// Fast path if there are items in the pool
 	if (pool->next) {
 		struct mempool_t *current = pool->next;
@@ -45,6 +55,10 @@ static inline void *mempool_alloc(struct mempool_t *pool, int size)
 // Release an item back to a memory pool
 static inline void mempool_free(struct mempool_t *pool, void *ptr)
 {
+#ifdef MEMPOOL_STATS
+	pool->count--;
+#endif
+
 	// Just add the item back into the pool's free list
 	struct mempool_t *current = ptr;
 	current->next = pool->next;

@@ -2,8 +2,8 @@
 #include "stringpool.h"
 
 // String pool table
-struct string_pool_t *string_pool[STRING_POOL_TABLE_SIZE] = {NULL};
+struct string_pool_t *string_pool[STRING_TABLE_SIZE];
 
 // Current memory block used for string allocation
-void *string_mem = NULL;
-int string_mem_offset = 0;
+void *string_mem;
+int string_mem_offset;

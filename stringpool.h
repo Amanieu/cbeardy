@@ -9,10 +9,10 @@
 #include "math.h"
 
 // Size of the string pool hash table
-#define STRING_POOL_TABLE_SIZE 0x80000
+#define STRING_TABLE_SIZE 0x200000
 
 // Size of a block of memory for use in the string pool
-#define STRING_POOL_BLOCK_SIZE 4194304
+#define STRING_BLOCK_SIZE 0x400000
 
 // String pool hash table entry
 struct string_pool_t {
@@ -21,7 +21,7 @@ struct string_pool_t {
 };
 
 // String pool table
-extern struct string_pool_t *string_pool[STRING_POOL_TABLE_SIZE];
+extern struct string_pool_t *string_pool[STRING_TABLE_SIZE];
 
 // Current memory block used for string allocation
 extern void *string_mem;
@@ -31,7 +31,7 @@ extern int string_mem_offset;
 static inline const char *copy_string(const char *string)
 {
 	// Hash the string
-	int hash = hash_string(string) & (STRING_POOL_TABLE_SIZE - 1);
+	int hash = hash_string(string) & (STRING_TABLE_SIZE - 1);
 
 	// Search the table for the string
 	struct string_pool_t *current;
@@ -47,8 +47,8 @@ static inline const char *copy_string(const char *string)
 	length = align(length, sizeof(void *));
 
 	// Try to allocate from current memory block, get a new block if full
-	if (string_mem_offset + length > STRING_POOL_BLOCK_SIZE) {
-		string_mem = malloc(STRING_POOL_BLOCK_SIZE);
+	if (string_mem_offset + length > STRING_BLOCK_SIZE) {
+		string_mem = malloc(STRING_BLOCK_SIZE);
 		string_mem_offset = length;
 		current = string_mem;
 	} else {
@@ -66,7 +66,7 @@ static inline const char *copy_string(const char *string)
 // Initialize string pool
 static inline void string_init(void)
 {
-	string_mem = malloc(STRING_POOL_BLOCK_SIZE);
+	string_mem = malloc(STRING_BLOCK_SIZE);
 }
 
 #endif
