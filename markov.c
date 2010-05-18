@@ -283,7 +283,7 @@ static struct markov_node_t *markov_generate_next_state(struct markov_node_t *cu
 	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
 		frequency_sum += current_exit->count;
 		
-		if (frequency_sum > frequency_threshold)
+		if (frequency_sum >= frequency_threshold)
 			return current_exit->node;
 	}
 	
