@@ -58,6 +58,12 @@ static struct mempool_t markov_exitpool_32;
 static struct mempool_t markov_exitpool_64;
 static struct mempool_t markov_exitpool_128;
 
+#ifdef MEMORY_STATS
+// Statistics for malloc()-based allocations
+static int markov_largepool_count;
+static int markov_largepool_total;
+#endif
+
 // Search the hash table for a node. Allocates a new node if one wasn't found.
 // All strings should have been allocated using copy_string().
 static inline struct markov_node_t *markov_get_node(const char *const *strings)
@@ -104,9 +110,9 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 	// We need to add a new exit. See if we need to extend the exit list.
 	if (node->num_exits <= 16 || is_power_of_2(node->num_exits)) {
 		struct markov_exit_t *newexits;
-		if (node->num_exits == 0) {
+		if (node->num_exits == 0)
 			newexits = mempool_alloc(&markov_exitpool_small[0], sizeof(struct markov_exit_t));
-		} else if (node->num_exits < 16) {
+		else if (node->num_exits < 16) {
 			struct mempool_t *oldpool = &markov_exitpool_small[node->num_exits - 1];
 			struct mempool_t *newpool = &markov_exitpool_small[node->num_exits];
 			newexits = mempool_alloc(newpool, sizeof(struct markov_exit_t) * (node->num_exits + 1));
@@ -128,8 +134,16 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 			newexits = malloc(sizeof(struct markov_exit_t) * 256);
 			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 128);
 			mempool_free(&markov_exitpool_128, node->exits);
-		} else
+#ifdef MEMORY_STATS
+			markov_largepool_count++;
+			markov_largepool_total += 256;
+#endif
+		} else {
 			newexits = realloc(node->exits, sizeof(struct markov_exit_t) * node->num_exits * 2);
+#ifdef MEMORY_STATS
+			markov_largepool_total += node->num_exits + node->num_exits / 2;
+#endif
+		}
 		node->exits = newexits;
 	}
 
@@ -331,15 +345,17 @@ static void markov_stats(void)
 	printf("Max depth %d, average depth %f\n", max_depth, (float)total_depth / count);
 	printf("Memory used by hash table structure: %zd\n\n", MARKOV_TABLE_SIZE * sizeof(struct markov_node_t *));
 
-#ifdef MEMPOOL_STATS
+#ifdef MEMORY_STATS
 	// Print the number of allocated elements in each pool
-	printf("Node pool: %d\n", markov_nodepool.count);
-	printf("Start pool: %d\n", markov_startpool.count);
+	printf("Node pool: %d, %zd mem usage\n", markov_nodepool.count, markov_nodepool.count * sizeof(struct markov_node_t));
+	printf("Start pool: %d, %zd mem usage\n", markov_startpool.count, markov_startpool.count * sizeof(struct markov_start_t));
 	for (i = 0; i < 16; i++)
-		printf("%d exits pool: %d\n", i + 1, markov_exitpool_small[i].count);
-	printf("32 exits pool: %d\n", markov_exitpool_32.count);
-	printf("64 exits pool: %d\n", markov_exitpool_64.count);
-	printf("128 exits pool: %d\n", markov_exitpool_128.count);
+		printf("%d exits pool: %d, %zd mem usage\n", i + 1, markov_exitpool_small[i].count, markov_exitpool_small[i].count * (i + 1) * sizeof(struct markov_exit_t));
+	printf("32 exits pool: %d, %zd mem usage\n", markov_exitpool_32.count, markov_exitpool_32.count * 32 * sizeof(struct markov_exit_t));
+	printf("64 exits pool: %d, %zd mem usage\n", markov_exitpool_64.count, markov_exitpool_64.count * 64 * sizeof(struct markov_exit_t));
+	printf("128 exits pool: %d, %zd mem usage\n", markov_exitpool_128.count, markov_exitpool_128.count * 128 * sizeof(struct markov_exit_t));
+	printf("Larger nodes: %d, %zd mem usage\n", markov_largepool_count, markov_largepool_total * sizeof(struct markov_exit_t));
+	printf("String pool: %d strings, %d mem usage\n", string_pool_count, string_mem_usage);
 #endif
 }
 

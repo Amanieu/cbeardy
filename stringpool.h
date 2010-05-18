@@ -9,7 +9,7 @@
 #include "math.h"
 
 // Size of the string pool hash table
-#define STRING_TABLE_SIZE 0x200000
+#define STRING_TABLE_SIZE 0x400000
 
 // Size of a block of memory for use in the string pool
 #define STRING_BLOCK_SIZE 0x400000
@@ -26,6 +26,12 @@ extern struct string_pool_t *string_pool[STRING_TABLE_SIZE];
 // Current memory block used for string allocation
 extern void *string_mem;
 extern int string_mem_offset;
+
+#ifdef MEMORY_STATS
+// Amount of memory used by string pool
+extern int string_mem_usage;
+extern int string_pool_count;
+#endif
 
 // Allocate a copy of a string, or return an existing copy
 static inline const char *copy_string(const char *string)
@@ -45,6 +51,12 @@ static inline const char *copy_string(const char *string)
 
 	// Make sure length is properly aligned to machine word length
 	length = align(length, sizeof(void *));
+
+#ifdef MEMORY_STATS
+	// Track memory usage
+	string_mem_usage += length;
+	string_pool_count++;
+#endif
 
 	// Try to allocate from current memory block, get a new block if full
 	if (string_mem_offset + length > STRING_BLOCK_SIZE) {
