@@ -271,18 +271,18 @@ static struct markov_node_t *markov_generate_next_state(struct markov_node_t *cu
 	// Calculate the sum of the frequencies of the start table
 	current_exit = current_node->exits;
 	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
-		frequency_sum += current_exit++->count;
+		frequency_sum += current_exit->count;
 	}
 	
 	// TODO: This is probably bad for a good number of reasons.
 	//       What should I be doing?
-	int frequency_threshold = rand()%frequency_sum;
+	int frequency_threshold = rand() % (frequency_sum+1);
 	
 	// Iterate through the data set until reaching the random threshold
+	frequency_sum = 0;
 	current_exit = current_node->exits;
 	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
 		frequency_sum += current_exit->count;
-		
 		if (frequency_sum >= frequency_threshold)
 			return current_exit->node;
 	}
@@ -343,16 +343,9 @@ static char *markov_generate()
 	struct markov_node_t *start = markov_generate_start_state();
 	output = markov_append_node_to_string(output, &buffer_size, start, 0);
 	
-	int count = 0;
 	
 	struct markov_node_t *current_node = start;
 	while (current_node) {
-		count++;
-		if (count > 50) {
-			printf("!!!!!!!!!!!!!!!!!!!! Looping !!!!!!!!!!!!!!!!!!!!\n");
-			break;
-		}
-		
 		current_node = markov_generate_next_state(current_node);
 		if (current_node)
 			output = markov_append_node_to_string(output, &buffer_size, current_node, 1);
@@ -542,14 +535,14 @@ int main(void)
 		}
 	}
 	
-	printf("\n---\n");
-	int i;
-	for (i = 0; i < 100; i++) {
+	FILE *tty = fopen("/dev/tty", "r");
+	
+	for (;;) {
 		char *sentence = markov_generate();
 		printf("%s\n\n", sentence);
 		free(sentence);
+		fgetc(tty);
 	}
-	printf("---\n");
 	
 	return 0;
 }
