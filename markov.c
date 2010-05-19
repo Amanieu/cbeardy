@@ -487,6 +487,15 @@ static void markov_stats(void)
 	printf("Larger nodes: %d, %zd mem usage\n", markov_largepool_count, markov_largepool_total * sizeof(struct markov_exit_t));
 	printf("String pool: %d strings, %d mem usage\n", string_pool_count, string_mem_usage);
 #endif
+	
+	FILE *tty = fopen("/dev/tty", "r");
+	
+	for (;;) {
+		char *sentence = markov_generate();
+		printf("%s\n\n", sentence);
+		free(sentence);
+		fgetc(tty);
+	}
 }
 
 // Signal handler to allow interruption
@@ -533,15 +542,6 @@ int main(void)
 				length = 0;
 			}
 		}
-	}
-	
-	FILE *tty = fopen("/dev/tty", "r");
-	
-	for (;;) {
-		char *sentence = markov_generate();
-		printf("%s\n\n", sentence);
-		free(sentence);
-		fgetc(tty);
 	}
 	
 	return 0;
