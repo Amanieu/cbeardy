@@ -6,7 +6,7 @@
     #define TOKENS_SIZE 2000
     char *tokens[TOKENS_SIZE];
     int no_of_tokens = 0;
-    bool in_image = false;
+    bool in_table = false;
 
     void reset_tokens()
     {
@@ -20,7 +20,9 @@
 
 "{{"[^}]*"}}"
 
-"{|"
+"{|" in_table = true;
+"|}" in_table = false;
+
 
 "<ref"[^\>\/]*">"[^\<]*"</ref>"
 "<ref"[^\>]*"/>"
@@ -41,7 +43,7 @@
 }
 		
 
-"."  if (depth == 0) printf("\n");
+"."  if (depth == 0 && ! in_table) printf("\n");
 
 ^\*+ {
 	printf("\n");
@@ -54,16 +56,20 @@
 
 [[:alnum:],\'\-;\(\)\\\/:]+ {
 	if (depth == 0)
-		printf("%s", yytext);
+	{
+		if (! in_table)
+			printf("%s", yytext);
+	}
 	else if (no_of_tokens < TOKENS_SIZE)
-			tokens[no_of_tokens++] = strdup(yytext);
+		tokens[no_of_tokens++] = strdup(yytext);
 }
 
 
-[[:space:]]+ if (depth == 0) printf("\n");
+[[:space:]]+ if (depth == 0 && ! in_table) printf("\n");
 
 "\x1C" {
 	depth=0;
+	in_table = false;
 	reset_tokens();
 }
 
