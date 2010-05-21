@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include <assert.h>
+#include <stdbool.h>
 #include "hash.h"
 #include "math.h"
 #include "mempool.h"
@@ -27,29 +28,32 @@ struct markov_exit_t {
 	int count;
 };
 
+// An entry in an exit hash table
+struct markov_hash_exit_t {
+	struct markov_hash_exit_t *next;
+	struct markov_node_t *node;
+	int count;
+};
+
 // A node in a markov chain
 struct markov_node_t {
 	struct markov_node_t *next;
 	const char *strings[MARKOV_ORDER];
 	int num_exits;
-	struct markov_exit_t *exits;
-};
-
-// An entry in the start node hash table
-struct markov_start_t {
-	struct markov_start_t *next;
-	struct markov_node_t *node;
-	int count;
+	union {
+		struct markov_exit_t *exits;
+		struct markov_hash_exit_t **hashtable;
+	};
 };
 
 // Hash table of markov chain nodes
 static struct markov_node_t *markov_table[MARKOV_TABLE_SIZE];
 
 // Hash table of start nodes
-static struct markov_start_t *markov_start_table[MARKOV_START_SIZE];
+static struct markov_hash_exit_t *markov_hash_exit_table[MARKOV_START_SIZE];
 
-// Memory pool for start node entries
-static struct mempool_t markov_startpool;
+// Memory pool for hash exit nodes
+static struct mempool_t markov_hashexitpool;
 
 // Memory pool for the node structure
 static struct mempool_t markov_nodepool;
@@ -68,13 +72,9 @@ static int markov_largepool_count;
 static int markov_largepool_total;
 #endif
 
-// Search the hash table for a node. Allocates a new node if one wasn't found.
-// All strings should have been allocated using copy_string().
-static inline struct markov_node_t *markov_get_node(const char *const *strings)
+// Search the hash table for a node
+static inline struct markov_node_t *markov_find_node(int hash, const char *const *strings)
 {
-	int hash = hash_strings(MARKOV_ORDER, strings) & (MARKOV_TABLE_SIZE - 1);
-
-	// Search the hash table for the node
 	struct markov_node_t *node;
 	for (node = markov_table[hash]; node; node = node->next) {
 		int i;
@@ -86,6 +86,19 @@ static inline struct markov_node_t *markov_get_node(const char *const *strings)
 		if (i == MARKOV_ORDER)
 			return node;
 	}
+
+	return NULL;
+}
+
+// Search the hash table for a node. Allocates a new node if one wasn't found.
+// All strings should have been allocated using copy_string().
+static inline struct markov_node_t *markov_get_node(const char *const *strings)
+{
+	int hash = hash_strings(MARKOV_ORDER, strings) & (MARKOV_TABLE_SIZE - 1);
+
+	struct markov_node_t *node = markov_find_node(hash, strings);
+	if (node)
+		return node;
 
 	// Allocate a new node
 	node = mempool_alloc(&markov_nodepool, sizeof(struct markov_node_t));
@@ -99,62 +112,123 @@ static inline struct markov_node_t *markov_get_node(const char *const *strings)
 	return node;
 }
 
+// Search the node for the given exit and increments it if found. Returns false if not found.
+static inline bool markov_increment_exit(struct markov_node_t *node, struct markov_node_t *exit)
+{
+	if (node->num_exits > 128) {
+		int hash = hash_pointer(exit) & (next_power_of_2(node->num_exits) - 1);
+		struct markov_hash_exit_t *current;
+		for (current = node->hashtable[hash]; current; current = current->next) {
+			if (current->node == exit) {
+				current->count++;
+				return true;
+			}
+		}
+	} else {
+		int i;
+		for (i = 0; i < node->num_exits; i++) {
+			if (node->exits[i].node == exit) {
+				node->exits[i].count++;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 // Add an exit to a node
 static inline void markov_add_exit(struct markov_node_t *node, struct markov_node_t *exit)
 {
 	// First see if we already have this exit
-	int i;
-	for (i = 0; i < node->num_exits; i++) {
-		if (node->exits[i].node == exit) {
-			node->exits[i].count++;
-			return;
-		}
-	}
+	if (markov_increment_exit(node, exit))
+		return;
 
 	// We need to add a new exit. See if we need to extend the exit list.
 	if (node->num_exits <= 16 || is_power_of_2(node->num_exits)) {
 		struct markov_exit_t *newexits;
-		if (node->num_exits == 0)
+		if (node->num_exits == 0) {
 			newexits = mempool_alloc(&markov_exitpool_small[0], sizeof(struct markov_exit_t));
-		else if (node->num_exits < 16) {
+			node->exits = newexits;
+		} else if (node->num_exits < 16) {
 			struct mempool_t *oldpool = &markov_exitpool_small[node->num_exits - 1];
 			struct mempool_t *newpool = &markov_exitpool_small[node->num_exits];
 			newexits = mempool_alloc(newpool, sizeof(struct markov_exit_t) * (node->num_exits + 1));
 			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * node->num_exits);
 			mempool_free(oldpool, node->exits);
+			node->exits = newexits;
 		} else if (node->num_exits == 16) {
 			newexits = mempool_alloc(&markov_exitpool_32, sizeof(struct markov_exit_t) * 32);
 			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 16);
 			mempool_free(&markov_exitpool_small[15], node->exits);
+			node->exits = newexits;
 		} else if (node->num_exits == 32) {
 			newexits = mempool_alloc(&markov_exitpool_64, sizeof(struct markov_exit_t) * 64);
 			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 32);
 			mempool_free(&markov_exitpool_32, node->exits);
+			node->exits = newexits;
 		} else if (node->num_exits == 64) {
 			newexits = mempool_alloc(&markov_exitpool_128, sizeof(struct markov_exit_t) * 128);
 			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 64);
 			mempool_free(&markov_exitpool_64, node->exits);
+			node->exits = newexits;
 		} else if (node->num_exits == 128) {
-			newexits = malloc(sizeof(struct markov_exit_t) * 256);
-			memcpy(newexits, node->exits, sizeof(struct markov_exit_t) * 128);
-			mempool_free(&markov_exitpool_128, node->exits);
+			newexits = node->exits;
+			node->hashtable = calloc(1, sizeof(struct markov_hash_exit_t *) * 256);
+			assert(node->hashtable);
+			int i;
+			for (i = 0; i < 128; i++) {
+				int hash = hash_pointer(newexits[i].node) & 127;
+				struct markov_hash_exit_t *current = mempool_alloc(&markov_hashexitpool, sizeof(struct markov_hash_exit_t));
+				current->node = newexits[i].node;
+				current->count = newexits[i].count;
+				current->next = node->hashtable[hash];
+				node->hashtable[hash] = current;
+			}
+			mempool_free(&markov_exitpool_128, newexits);
 #ifdef MEMORY_STATS
 			markov_largepool_count++;
 			markov_largepool_total += 256;
 #endif
 		} else {
-			newexits = realloc(node->exits, sizeof(struct markov_exit_t) * node->num_exits * 2);
+			node->hashtable = realloc(node->hashtable, sizeof(struct markov_hash_exit_t *) * node->num_exits * 2);
+			memset(node->hashtable + node->num_exits, 0, sizeof(struct markov_hash_exit_t *) * node->num_exits);
+			assert(node->hashtable);
+			int i;
+			for (i = 0; i < node->num_exits; i++) {
+				struct markov_hash_exit_t **insert = &node->hashtable[i];
+				struct markov_hash_exit_t *current = node->hashtable[i];
+				while (current) {
+					int hash = hash_pointer(current->node) & (node->num_exits * 2 - 1);
+					if (hash != i) {
+						*insert = current->next;
+						current->next = node->hashtable[hash];
+						node->hashtable[hash] = current;
+						current = *insert;
+					} else {
+						insert = &current->next;
+						current = *insert;
+					}
+				}
+			}
 #ifdef MEMORY_STATS
 			markov_largepool_total += node->num_exits + node->num_exits / 2;
 #endif
 		}
-		node->exits = newexits;
 	}
 
-	// Now just add an exit at the end
-	int exit_id = node->num_exits++;
-	node->exits[exit_id].node = exit;
-	node->exits[exit_id].count = 1;
+	// Now finally add the exit
+	if (++node->num_exits > 128) {
+		int hash = hash_pointer(exit) & (next_power_of_2(node->num_exits) - 1);
+		struct markov_hash_exit_t *current = mempool_alloc(&markov_hashexitpool, sizeof(struct markov_hash_exit_t));
+		current->node = exit;
+		current->count = 1;
+		current->next = node->hashtable[hash];
+		node->hashtable[hash] = current;
+	} else {
+		node->exits[node->num_exits - 1].node = exit;
+		node->exits[node->num_exits - 1].count = 1;
+	}
 }
 
 // Add a node to the start of the chain
@@ -163,8 +237,8 @@ static inline void markov_add_start(struct markov_node_t *node)
 	int hash = hash_pointer(node) & (MARKOV_START_SIZE - 1);
 
 	// Search the hash table for the node
-	struct markov_start_t *start;
-	for (start = markov_start_table[hash]; start; start = start->next) {
+	struct markov_hash_exit_t *start;
+	for (start = markov_hash_exit_table[hash]; start; start = start->next) {
 		if (start->node == node) {
 			start->count++;
 			return;
@@ -172,11 +246,11 @@ static inline void markov_add_start(struct markov_node_t *node)
 	}
 
 	// Allocate a new entry and add it to the hash table
-	start = mempool_alloc(&markov_startpool, sizeof(struct markov_start_t));
+	start = mempool_alloc(&markov_hashexitpool, sizeof(struct markov_hash_exit_t));
 	start->count = 1;
 	start->node = node;
-	start->next = markov_start_table[hash];
-	markov_start_table[hash] = start;
+	start->next = markov_hash_exit_table[hash];
+	markov_hash_exit_table[hash] = start;
 }
 
 // Train the markov model using the given sentence. All strings in the sentence
@@ -226,13 +300,13 @@ static inline void markov_train(int length, const char *const *sentence)
 static struct markov_node_t *markov_generate_start_state(void)
 {
 	int i;
-	struct markov_start_t *current;
+	struct markov_hash_exit_t *current;
 	
 	int frequency_sum = 0;
 	
 	// Calculate the sum of the frequencies of the start table
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		for (current = markov_start_table[i]; current; current = current->next) {
+		for (current = markov_hash_exit_table[i]; current; current = current->next) {
 			frequency_sum += current->count;
 		}
 	}
@@ -244,7 +318,7 @@ static struct markov_node_t *markov_generate_start_state(void)
 	// Iterate through the data set until reaching the random threshold
 	frequency_sum = 0;
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		for (current = markov_start_table[i]; current; current = current->next) {
+		for (current = markov_hash_exit_table[i]; current; current = current->next) {
 			frequency_sum += current->count;
 			
 			if (frequency_sum > frequency_threshold)
@@ -367,8 +441,8 @@ static inline void markov_print(void)
 	printf("START\n");
 	int i;
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		struct markov_start_t *current;
-		for (current = markov_start_table[i]; current; current = current->next) {
+		struct markov_hash_exit_t *current;
+		for (current = markov_hash_exit_table[i]; current; current = current->next) {
 			printf("  %d ->", current->count);
 			int j;
 			for (j = 0; j < MARKOV_ORDER; j++)
@@ -427,17 +501,17 @@ static void markov_stats(void)
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, STRING_TABLE_SIZE, (float)count / STRING_TABLE_SIZE);
 	printf("%d empty slots, %f usage \n", STRING_TABLE_SIZE - num_filled, (float)num_filled / STRING_TABLE_SIZE);
 	printf("Max depth %d, average depth %f\n", max_depth, (float)total_depth / count);
-	printf("Memory used by hash table structure: %zd\n\n", STRING_TABLE_SIZE * sizeof(struct string_pool_t *));
+	printf("Memory used by hash table structure: %zdk\n\n", STRING_TABLE_SIZE * sizeof(struct string_pool_t *) / 1024);
 
 	// Start table
 	max_depth = total_depth = num_filled = count = 0;
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		if (markov_start_table[i])
+		if (markov_hash_exit_table[i])
 			num_filled++;
 
 		int depth = 0;
-		struct markov_start_t *current;
-		for (current = markov_start_table[i]; current; current = current->next) {
+		struct markov_hash_exit_t *current;
+		for (current = markov_hash_exit_table[i]; current; current = current->next) {
 			count++;
 			depth++;
 		}
@@ -450,7 +524,7 @@ static void markov_stats(void)
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, MARKOV_START_SIZE, (float)count / MARKOV_START_SIZE);
 	printf("%d empty slots, %f usage \n", MARKOV_START_SIZE - num_filled, (float)num_filled / MARKOV_START_SIZE);
 	printf("Max depth %d, average depth %f\n", max_depth, (float)total_depth / count);
-	printf("Memory used by hash table structure: %zd\n\n", MARKOV_START_SIZE * sizeof(struct markov_start_t *));
+	printf("Memory used by hash table structure: %zdk\n\n", MARKOV_START_SIZE * sizeof(struct markov_hash_exit_t *) / 1024);
 
 	// Node table
 	max_depth = total_depth = num_filled = count = 0;
@@ -473,29 +547,20 @@ static void markov_stats(void)
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, MARKOV_TABLE_SIZE, (float)count / MARKOV_TABLE_SIZE);
 	printf("%d empty slots, %f usage \n", MARKOV_TABLE_SIZE - num_filled, (float)num_filled / MARKOV_TABLE_SIZE);
 	printf("Max depth %d, average depth %f\n", max_depth, (float)total_depth / count);
-	printf("Memory used by hash table structure: %zd\n\n", MARKOV_TABLE_SIZE * sizeof(struct markov_node_t *));
+	printf("Memory used by hash table structure: %zdk\n\n", MARKOV_TABLE_SIZE * sizeof(struct markov_node_t *) / 1024);
 
 #ifdef MEMORY_STATS
 	// Print the number of allocated elements in each pool
-	printf("Node pool: %d, %zd mem usage\n", markov_nodepool.count, markov_nodepool.count * sizeof(struct markov_node_t));
-	printf("Start pool: %d, %zd mem usage\n", markov_startpool.count, markov_startpool.count * sizeof(struct markov_start_t));
+	printf("Node pool: %d, %zdk mem usage\n", markov_nodepool.count, markov_nodepool.count * sizeof(struct markov_node_t) / 1024);
+	printf("Hash exit pool: %d, %zdk mem usage\n", markov_hashexitpool.count, markov_hashexitpool.count * sizeof(struct markov_hash_exit_t) / 1024);
 	for (i = 0; i < 16; i++)
-		printf("%d exits pool: %d, %zd mem usage\n", i + 1, markov_exitpool_small[i].count, markov_exitpool_small[i].count * (i + 1) * sizeof(struct markov_exit_t));
-	printf("32 exits pool: %d, %zd mem usage\n", markov_exitpool_32.count, markov_exitpool_32.count * 32 * sizeof(struct markov_exit_t));
-	printf("64 exits pool: %d, %zd mem usage\n", markov_exitpool_64.count, markov_exitpool_64.count * 64 * sizeof(struct markov_exit_t));
-	printf("128 exits pool: %d, %zd mem usage\n", markov_exitpool_128.count, markov_exitpool_128.count * 128 * sizeof(struct markov_exit_t));
-	printf("Larger nodes: %d, %zd mem usage\n", markov_largepool_count, markov_largepool_total * sizeof(struct markov_exit_t));
-	printf("String pool: %d strings, %d mem usage\n", string_pool_count, string_mem_usage);
+		printf("%d exits pool: %d, %zdk mem usage\n", i + 1, markov_exitpool_small[i].count, markov_exitpool_small[i].count * (i + 1) * sizeof(struct markov_exit_t) / 1024);
+	printf("32 exits pool: %d, %zdk mem usage\n", markov_exitpool_32.count, markov_exitpool_32.count * 32 * sizeof(struct markov_exit_t) / 1024);
+	printf("64 exits pool: %d, %zdk mem usage\n", markov_exitpool_64.count, markov_exitpool_64.count * 64 * sizeof(struct markov_exit_t) / 1024);
+	printf("128 exits pool: %d, %zdk mem usage\n", markov_exitpool_128.count, markov_exitpool_128.count * 128 * sizeof(struct markov_exit_t) / 1024);
+	printf("Larger nodes: %d, %zdk mem usage\n", markov_largepool_count, markov_largepool_total * sizeof(struct markov_exit_t) / 1024);
+	printf("String pool: %d strings, %dk mem usage\n", string_pool_count, string_mem_usage / 1024);
 #endif
-	
-	FILE *tty = fopen("/dev/tty", "r");
-	
-	for (;;) {
-		char *sentence = markov_generate();
-		printf("%s\n\n", sentence);
-		free(sentence);
-		fgetc(tty);
-	}
 }
 
 // Signal handler to allow interruption
@@ -543,6 +608,15 @@ int main(void)
 			}
 		}
 	}
-	
+
+	/*FILE *tty = fopen("/dev/tty", "r");
+
+	for (;;) {
+		char *sentence = markov_generate();
+		printf("%s\n\n", sentence);
+		free(sentence);
+		fgetc(tty);
+	}*/
+
 	return 0;
 }

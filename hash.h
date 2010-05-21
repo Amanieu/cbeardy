@@ -15,7 +15,7 @@ static inline int hash_string(const char *string)
 	return hash;
 }
 
-// Hash a pointer
+// Hash a pointer (from boost::hash)
 static inline int hash_pointer(const void *ptr)
 {
 	intptr_t value = (intptr_t)ptr;
@@ -23,7 +23,7 @@ static inline int hash_pointer(const void *ptr)
 }
 
 // Hashes multiple strings. Since all strings are from the pool, just hash their
-// pointers.
+// pointers. (from boost::hash)
 static inline int hash_strings(int num_strings, const char *const *strings)
 {
 	int hash = 0;
