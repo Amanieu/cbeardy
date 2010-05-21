@@ -8,9 +8,7 @@
 #include "math.h"
 #include "mempool.h"
 #include "stringpool.h"
-
-// Order of the markov model
-#define MARKOV_ORDER 2
+#include "markov.h"
 
 // Size of the markov chain node hash table
 #define MARKOV_TABLE_SIZE 0x1000000
@@ -38,7 +36,10 @@ struct markov_hash_exit_t {
 // A node in a markov chain
 struct markov_node_t {
 	struct markov_node_t *next;
-	const char *strings[MARKOV_ORDER];
+	union {
+		const char *strings[MARKOV_ORDER];
+		markov_offset_t offset;
+	};
 	int num_exits;
 	union {
 		struct markov_exit_t *exits;
@@ -66,11 +67,9 @@ static struct mempool_t markov_exitpool_32;
 static struct mempool_t markov_exitpool_64;
 static struct mempool_t markov_exitpool_128;
 
-#ifdef MEMORY_STATS
 // Statistics for malloc()-based allocations
 static int markov_largepool_count;
 static int markov_largepool_total;
-#endif
 
 // Search the hash table for a node
 static inline struct markov_node_t *markov_find_node(int hash, const char *const *strings)
@@ -91,7 +90,7 @@ static inline struct markov_node_t *markov_find_node(int hash, const char *const
 }
 
 // Search the hash table for a node. Allocates a new node if one wasn't found.
-// All strings should have been allocated using copy_string().
+// All strings should have been allocated using string_copy().
 static inline struct markov_node_t *markov_get_node(const char *const *strings)
 {
 	int hash = hash_strings(MARKOV_ORDER, strings) & (MARKOV_TABLE_SIZE - 1);
@@ -186,10 +185,8 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 				node->hashtable[hash] = current;
 			}
 			mempool_free(&markov_exitpool_128, newexits);
-#ifdef MEMORY_STATS
 			markov_largepool_count++;
 			markov_largepool_total += 256;
-#endif
 		} else {
 			node->hashtable = realloc(node->hashtable, sizeof(struct markov_hash_exit_t *) * node->num_exits * 2);
 			memset(node->hashtable + node->num_exits, 0, sizeof(struct markov_hash_exit_t *) * node->num_exits);
@@ -211,9 +208,7 @@ static inline void markov_add_exit(struct markov_node_t *node, struct markov_nod
 					}
 				}
 			}
-#ifdef MEMORY_STATS
 			markov_largepool_total += node->num_exits + node->num_exits / 2;
-#endif
 		}
 	}
 
@@ -254,7 +249,7 @@ static inline void markov_add_start(struct markov_node_t *node)
 }
 
 // Train the markov model using the given sentence. All strings in the sentence
-// must have been allocated using copy_string().
+// must have been allocated using string_copy().
 static inline void markov_train(int length, const char *const *sentence)
 {
 	// Ignore empty sentences
@@ -494,8 +489,7 @@ static void markov_stats(void)
 		}
 
 		total_depth += depth * depth;
-		if (depth > max_depth)
-			max_depth = depth;
+		max_depth = max(depth, max_depth);
 	}
 	printf("\nString table\n");
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, STRING_TABLE_SIZE, (float)count / STRING_TABLE_SIZE);
@@ -517,8 +511,7 @@ static void markov_stats(void)
 		}
 
 		total_depth += depth * depth;
-		if (depth > max_depth)
-			max_depth = depth;
+		max_depth = max(depth, max_depth);
 	}
 	printf("Start table\n");
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, MARKOV_START_SIZE, (float)count / MARKOV_START_SIZE);
@@ -540,8 +533,7 @@ static void markov_stats(void)
 		}
 
 		total_depth += depth * depth;
-		if (depth > max_depth)
-			max_depth = depth;
+		max_depth = max(depth, max_depth);
 	}
 	printf("Node table\n");
 	printf("%d elements, %d/%d slots, load factor %f\n", count, num_filled, MARKOV_TABLE_SIZE, (float)count / MARKOV_TABLE_SIZE);
@@ -549,7 +541,6 @@ static void markov_stats(void)
 	printf("Max depth %d, average depth %f\n", max_depth, (float)total_depth / count);
 	printf("Memory used by hash table structure: %zdk\n\n", MARKOV_TABLE_SIZE * sizeof(struct markov_node_t *) / 1024);
 
-#ifdef MEMORY_STATS
 	// Print the number of allocated elements in each pool
 	printf("Node pool: %d, %zdk mem usage\n", markov_nodepool.count, markov_nodepool.count * sizeof(struct markov_node_t) / 1024);
 	printf("Hash exit pool: %d, %zdk mem usage\n", markov_hashexitpool.count, markov_hashexitpool.count * sizeof(struct markov_hash_exit_t) / 1024);
@@ -560,12 +551,124 @@ static void markov_stats(void)
 	printf("128 exits pool: %d, %zdk mem usage\n", markov_exitpool_128.count, markov_exitpool_128.count * 128 * sizeof(struct markov_exit_t) / 1024);
 	printf("Larger nodes: %d, %zdk mem usage\n", markov_largepool_count, markov_largepool_total * sizeof(struct markov_exit_t) / 1024);
 	printf("String pool: %d strings, %dk mem usage\n", string_pool_count, string_mem_usage / 1024);
-#endif
+}
+
+// First pass: Write the nodes to the file and leave holes for the exits
+static inline void markov_export_nodes(FILE *file)
+{
+	int i;
+	for (i = 0; i < MARKOV_TABLE_SIZE; i++) {
+		struct markov_node_t *current;
+		for (current = markov_table[i]; current; current = current->next) {
+			// Create the node structure
+			struct markov_export_node_t export;
+			int j;
+			for (j = 0; j < MARKOV_ORDER; j++)
+				export.strings[j] = string_offset(current->strings[j]);
+			export.num_exits = current->num_exits;
+
+			// Save the node offset for the second pass
+			current->offset = ftello64(file);
+
+			// Write the node to the file
+			if (!fwrite(&export, sizeof(struct markov_export_node_t), 1, file)) {
+				printf("Error writing to markov database: %s\n", strerror(errno));
+				exit(1);
+			}
+
+			// Leave a hole in the file for putting the exits
+			fseeko64(file, sizeof(struct markov_export_exit_t) * current->num_exits, SEEK_CUR);
+		}
+	}
+}
+
+// Second pass: Write the exits in the holes from the first pass
+static inline void markov_export_exits(FILE *file)
+{
+	int i;
+	for (i = 0; i < MARKOV_TABLE_SIZE; i++) {
+		struct markov_node_t *current;
+		for (current = markov_table[i]; current; current = current->next) {
+			// Go to the offset of the exits for this node
+			fseeko64(file, current->offset + sizeof(struct markov_export_node_t), SEEK_SET);
+
+			// Go through all the exits of this node
+			int total_count = 0;
+			if (current->num_exits > 128) {
+				int j;
+				int table_size = next_power_of_2(current->num_exits);
+				for (j = 0; j < table_size; j++) {
+					struct markov_hash_exit_t *current_exit;
+					for (current_exit = current->hashtable[j]; current_exit; current_exit = current_exit->next) {
+						total_count += current_exit->count;
+						struct markov_export_exit_t export;
+						export.node = current_exit->node->offset;
+						export.count = total_count;
+						if (!fwrite(&export, sizeof(struct markov_export_exit_t), 1, file)) {
+							printf("Error writing to markov database: %s\n", strerror(errno));
+							exit(1);
+						}
+					}
+				}
+			} else {
+				int j;
+				for (j = 0; j < current->num_exits; j++) {
+					total_count += current->exits[j].count;
+					struct markov_export_exit_t export;
+					export.node = current->exits[j].node->offset;
+					export.count = total_count;
+					if (!fwrite(&export, sizeof(struct markov_export_exit_t), 1, file)) {
+						printf("Error writing to markov database: %s\n", strerror(errno));
+						exit(1);
+					}
+				}
+			}
+		}
+	}
+}
+
+// Export the markov model to a file
+static inline void markov_export(void)
+{
+	// First create the string database
+	FILE *file = fopen("stringdb", "w");
+	if (!file) {
+		printf("Error opening string database for writing: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("Writing strings... ");
+	fflush(stdout);
+	string_export(file);
+	if (fclose(file)) {
+		printf("Error writing to string database: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("done\n");
+
+	// Then create the node and exit database
+	file = fopen("markovdb", "w");
+	if (!file) {
+		printf("Error opening markov database for writing: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("Writing markov nodes... ");
+	fflush(stdout);
+	markov_export_nodes(file);
+	printf("done\n");
+	printf("Writing markov exits... ");
+	fflush(stdout);
+	markov_export_exits(file);
+	if (fclose(file)) {
+		printf("Error writing to markov database: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("done\n");
 }
 
 // Signal handler to allow interruption
-void signal_handler(int signal)
+static void signal_handler(int signal)
 {
+	// Shut up compiler warning
 	(void)signal;
 	exit(0);
 }
@@ -583,7 +686,7 @@ int main(void)
 	const char *sentence[8192];
 	char buffer[8192];
 	while (fgets(buffer, sizeof(buffer), stdin)) {
-		// General progress indicator, compare it with input line count
+		// General progress indicator, shows number of lines processed.
 		counter++;
 		if (counter % 100000 == 0)
 			printf("%d\n", counter);
@@ -600,7 +703,7 @@ int main(void)
 			markov_train(length, sentence);
 			length = 0;
 		} else {
-			sentence[length++] = copy_string(buffer);
+			sentence[length++] = string_copy(buffer);
 			if (length == 8192) {
 				printf("Sentence too long\n");
 				markov_train(length, sentence);
@@ -608,6 +711,9 @@ int main(void)
 			}
 		}
 	}
+
+	// Save the model
+	markov_export();
 
 	/*FILE *tty = fopen("/dev/tty", "r");
 

@@ -3,7 +3,7 @@
 gcc -pipe -Wall -Wextra -O3 convert.c -o convert
 
 # For optimized build
-#gcc -ggdb3 -m32 -D_GNU_SOURCE -DNDEBUG -U_FORTIFY_SOURCE -pipe -Wall -Wextra -fomit-frame-pointer -O3 -march=native markov.c stringpool.c -o cbeardy
+gcc -ggdb3 -m32 -D_GNU_SOURCE -DNDEBUG -U_FORTIFY_SOURCE -pipe -Wall -Wextra -fomit-frame-pointer -O3 -march=native markov.c stringpool.c -o cbeardy
 
 # For profiled build
-gcc -ggdb3 -m32 -D_GNU_SOURCE -DMEMORY_STATS -U_FORTIFY_SOURCE -pipe -Wall -Wextra -O3 -fno-inline -pg -march=native markov.c stringpool.c -o cbeardy
+#gcc -ggdb3 -m32 -D_GNU_SOURCE -U_FORTIFY_SOURCE -pipe -Wall -Wextra -O3 -fno-inline -pg -march=native markov.c stringpool.c -o cbeardy
