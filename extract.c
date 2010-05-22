@@ -18,7 +18,7 @@ void startElement(void *userData, const char *name, const char **atts)
 	/* for (i = 0; i < data->depth; i++) */
 	/* 	putchar('\t'); */
 	/* puts(name); */
-	if ((! data->in_text) && strcmp(name, "text") == 0)
+	if ((! data->in_text) && (strcmp(name, "text") == 0))
 	{
 		data->in_text = true;
 		data->text_depth = data->depth;
@@ -54,7 +54,7 @@ int main()
 	char buf[BUFSIZ];
 	XML_Parser parser = XML_ParserCreate(NULL);
 	int done;
-	Data data;
+	Data data = {0, false, 0};
 
 	XML_SetUserData(parser, &data);
 	XML_SetElementHandler(parser, startElement, endElement);
