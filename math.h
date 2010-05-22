@@ -3,7 +3,9 @@
 
 #include <stdbool.h>
 
-// Various math functions
+// Get the maximum or minimum of two values
+#define max(x, y) ((x) > (y) ? (x) : (y))
+#define min(x, y) ((x) < (y) ? (x) : (y))
 
 // Check if a value is a power of 2
 static inline bool is_power_of_2(int x)

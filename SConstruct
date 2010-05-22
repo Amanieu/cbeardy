@@ -11,7 +11,7 @@ beard_env = Environment(CFLAGS=['-ggdb3',
                                 '-pipe'])
 
 if ARGUMENTS.get('profile', 0):
-    beard_env.Append(CFLAGS="-DMEMORY_STATS -pg -fno-inline".split())
+    beard_env.Append(CFLAGS="-pg -fno-inline".split())
 else:
     beard_env.Append(CFLAGS="-DNDEBUG -fomit-frame-pointer".split())
 
