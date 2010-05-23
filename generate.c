@@ -72,18 +72,20 @@ static inline struct markov_export_node_t *markov_generate_next_state(int num_ex
 	// Determine the frequencry threshold
 	int frequency_threshold = rand() % (exits[num_exits - 1].count + 1);
 
-	// Iterate through the data set until reaching the random threshold
-	int i;
-	int frequency_sum = 0;
-	for (i = 0; i < num_exits; i++) {
-		frequency_sum += exits[i].count;
-		if (frequency_sum >= frequency_threshold)
-			return get_node(exits[i].node);
+	// Use a binary search to find the exit we are looking for
+	int half;
+	struct markov_export_exit_t *middle;
+	while (num_exits) {
+		half = num_exits / 2;
+		middle = exits + half;
+		if (middle->count < frequency_threshold) {
+			exits = middle + 1;
+			num_exits = num_exits - half - 1;
+		} else
+			num_exits = half;
 	}
 
-	// There were no exits!
-	assert(0);
-	return NULL;
+	return get_node(exits->node);
 }
 
 // Appends a node's contents to a given buffer and returns a pointer to the
