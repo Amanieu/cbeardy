@@ -2,32 +2,34 @@
  * cbeardy.
  */
 #include <stdio.h>
+#include <stdbool.h>
 
-void main ()
+int main(void)
 {
-	short register readDot = 0;
-	short register readSpace = 0;
-	
+	bool readDot = false;
+	bool readSpace = false;
+
 	int c;
 	while ((c = getchar()) != EOF) {
 		switch (c) {
 			case ' ':
 				if (!readSpace)
 					putchar('\n');
-				readSpace = 1;
+				readSpace = true;
 				break;
 			case '.':
 				if (!readDot) {
 					putchar('\n');
 					putchar('\n');
 				}
-				readDot = 1;
+				readDot = true;
 				break;
 			default:
-				readSpace = 0;
-				readDot = 0;
+				readSpace = readDot = false;
 				putchar(c);
 				break;
 		}
 	}
+
+	return 0;
 }

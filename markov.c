@@ -16,9 +16,6 @@
 // Size of start node hash table
 #define MARKOV_START_SIZE 0x200000
 
-// Initial size of the string buffer when generating strings
-#define MARKOV_GENERATE_BUFFER_SIZE 512
-
 // An exit for a node in a markov chain
 struct markov_node_t;
 struct markov_exit_t {
@@ -51,7 +48,8 @@ struct markov_node_t {
 static struct markov_node_t *markov_table[MARKOV_TABLE_SIZE];
 
 // Hash table of start nodes
-static struct markov_hash_exit_t *markov_hash_exit_table[MARKOV_START_SIZE];
+static struct markov_hash_exit_t *markov_start_table[MARKOV_START_SIZE];
+static int markov_num_start;
 
 // Memory pool for hash exit nodes
 static struct mempool_t markov_hashexitpool;
@@ -233,7 +231,7 @@ static inline void markov_add_start(struct markov_node_t *node)
 
 	// Search the hash table for the node
 	struct markov_hash_exit_t *start;
-	for (start = markov_hash_exit_table[hash]; start; start = start->next) {
+	for (start = markov_start_table[hash]; start; start = start->next) {
 		if (start->node == node) {
 			start->count++;
 			return;
@@ -244,8 +242,9 @@ static inline void markov_add_start(struct markov_node_t *node)
 	start = mempool_alloc(&markov_hashexitpool, sizeof(struct markov_hash_exit_t));
 	start->count = 1;
 	start->node = node;
-	start->next = markov_hash_exit_table[hash];
-	markov_hash_exit_table[hash] = start;
+	start->next = markov_start_table[hash];
+	markov_start_table[hash] = start;
+	markov_num_start++;
 }
 
 // Train the markov model using the given sentence. All strings in the sentence
@@ -291,138 +290,6 @@ static inline void markov_train(int length, const char *const *sentence)
 	markov_add_exit(node, nextnode);
 }
 
-// Picks a random start state, taking into account weightings based on frequency
-static struct markov_node_t *markov_generate_start_state(void)
-{
-	int i;
-	struct markov_hash_exit_t *current;
-	
-	int frequency_sum = 0;
-	
-	// Calculate the sum of the frequencies of the start table
-	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		for (current = markov_hash_exit_table[i]; current; current = current->next) {
-			frequency_sum += current->count;
-		}
-	}
-	
-	// TODO: This is probably bad for a good number of reasons.
-	//       What should I be doing?
-	int frequency_threshold = rand()%frequency_sum;
-	
-	// Iterate through the data set until reaching the random threshold
-	frequency_sum = 0;
-	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		for (current = markov_hash_exit_table[i]; current; current = current->next) {
-			frequency_sum += current->count;
-			
-			if (frequency_sum > frequency_threshold)
-				return current->node;
-		}
-	}
-	
-	// Shouldn't reach here as threshold should have been reached
-	assert(0);
-	return NULL;
-}
-
-// Picks a random exit state, taking into account weightings based on frequency.
-// Returns NULL if the state should be the END state.
-static struct markov_node_t *markov_generate_next_state(struct markov_node_t *current_node)
-{
-	if (current_node->strings[MARKOV_ORDER-1] == NULL)
-		return NULL;
-	
-	int i;
-	int frequency_sum = 0;
-	struct markov_exit_t *current_exit;
-	
-	// Calculate the sum of the frequencies of the start table
-	current_exit = current_node->exits;
-	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
-		frequency_sum += current_exit->count;
-	}
-	
-	// TODO: This is probably bad for a good number of reasons.
-	//       What should I be doing?
-	int frequency_threshold = rand() % (frequency_sum+1);
-	
-	// Iterate through the data set until reaching the random threshold
-	frequency_sum = 0;
-	current_exit = current_node->exits;
-	for (i = 0; i < current_node->num_exits; i++, current_exit++) {
-		frequency_sum += current_exit->count;
-		if (frequency_sum >= frequency_threshold)
-			return current_exit->node;
-	}
-	
-	// There were no exits!
-	return NULL;
-}
-
-// Appends a node's contents to a given buffer and returns a pointer to the
-// buffer incase it is extended.
-static char *markov_append_node_to_string(char *old_str,
-                                          int *buffer_size,
-                                          struct markov_node_t *node,
-                                          int only_print_last)
-{
-	// The index to start printing the strings in the node from
-	int print_from = only_print_last * (MARKOV_ORDER - 1);
-	
-	// Find the new required length for the string incase the buffer needs
-	// extending
-	size_t new_length;
-	new_length = strlen(old_str);
-	int i;
-	for (i = print_from; i < MARKOV_ORDER; i++) {
-		if (node->strings[i])
-			new_length += strlen(node->strings[i]) + 1;
-	}
-	
-	char *new_str;
-	
-	if ((int)new_length + 1 > *buffer_size) {
-		// If the new length is too big, double the buffer size
-		(*buffer_size) *= 2;
-		new_str = realloc(old_str, *buffer_size);
-	} else {
-		new_str = old_str;
-	}
-	
-	// Concatenate the new node's strings onto the end
-	for (i = print_from; i < MARKOV_ORDER; i++) {
-		if (node->strings[i]) {
-			strcat(new_str, node->strings[i]);
-			strcat(new_str, " ");
-		}
-	}
-	
-	return new_str;
-}
-
-// Generate sentences using the current markov model
-static char *markov_generate()
-{
-	// Create a buffer to put the output into
-	int buffer_size = MARKOV_GENERATE_BUFFER_SIZE;
-	char *output = malloc(MARKOV_GENERATE_BUFFER_SIZE);
-	*output = '\0';
-	
-	struct markov_node_t *start = markov_generate_start_state();
-	output = markov_append_node_to_string(output, &buffer_size, start, 0);
-	
-	
-	struct markov_node_t *current_node = start;
-	while (current_node) {
-		current_node = markov_generate_next_state(current_node);
-		if (current_node)
-			output = markov_append_node_to_string(output, &buffer_size, current_node, 1);
-	}
-	
-	return output;
-}
-
 // Initialize various stuff
 static inline void markov_init(void)
 {
@@ -437,7 +304,7 @@ static inline void markov_print(void)
 	int i;
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
 		struct markov_hash_exit_t *current;
-		for (current = markov_hash_exit_table[i]; current; current = current->next) {
+		for (current = markov_start_table[i]; current; current = current->next) {
 			printf("  %d ->", current->count);
 			int j;
 			for (j = 0; j < MARKOV_ORDER; j++)
@@ -500,12 +367,12 @@ static void markov_stats(void)
 	// Start table
 	max_depth = total_depth = num_filled = count = 0;
 	for (i = 0; i < MARKOV_START_SIZE; i++) {
-		if (markov_hash_exit_table[i])
+		if (markov_start_table[i])
 			num_filled++;
 
 		int depth = 0;
 		struct markov_hash_exit_t *current;
-		for (current = markov_hash_exit_table[i]; current; current = current->next) {
+		for (current = markov_start_table[i]; current; current = current->next) {
 			count++;
 			depth++;
 		}
@@ -627,6 +494,32 @@ static inline void markov_export_exits(FILE *file)
 	}
 }
 
+// Write all the start states
+static inline void markov_export_start(FILE *file)
+{
+	// Write the number of start states
+	if (!fwrite(&markov_num_start, sizeof(markov_num_start), 1, file)) {
+		printf("Error writing to start database: %s\n", strerror(errno));
+		exit(1);
+	}
+
+	int i;
+	int total_count = 0;
+	for (i = 0; i < MARKOV_START_SIZE; i++) {
+		struct markov_hash_exit_t *current;
+		for (current = markov_start_table[i]; current; current = current->next) {
+			total_count += current->count;
+			struct markov_export_exit_t export;
+			export.node = current->node->offset;
+			export.count = total_count;
+			if (!fwrite(&export, sizeof(struct markov_export_exit_t), 1, file)) {
+				printf("Error writing to start database: %s\n", strerror(errno));
+				exit(1);
+			}
+		}
+	}
+}
+
 // Export the markov model to a file
 static inline void markov_export(void)
 {
@@ -658,6 +551,21 @@ static inline void markov_export(void)
 	printf("Writing markov exits... ");
 	fflush(stdout);
 	markov_export_exits(file);
+	if (fclose(file)) {
+		printf("Error writing to markov database: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("done\n");
+
+	// Finally create the start states database
+	file = fopen("startdb", "w");
+	if (!file) {
+		printf("Error opening start database for writing: %s\n", strerror(errno));
+		exit(1);
+	}
+	printf("Writing start states... ");
+	fflush(stdout);
+	markov_export_start(file);
 	if (fclose(file)) {
 		printf("Error writing to markov database: %s\n", strerror(errno));
 		exit(1);
@@ -714,15 +622,6 @@ int main(void)
 
 	// Save the model
 	markov_export();
-
-	/*FILE *tty = fopen("/dev/tty", "r");
-
-	for (;;) {
-		char *sentence = markov_generate();
-		printf("%s\n\n", sentence);
-		free(sentence);
-		fgetc(tty);
-	}*/
 
 	return 0;
 }

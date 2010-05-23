@@ -3,10 +3,13 @@
 
 // Structures for the markov export database
 
+#include <stdint.h>
+
 // Order of the markov model
 #define MARKOV_ORDER 2
 
-// Type of a string offset. Using 64-bit int to allow files larger than 4GB.
+// Type of a string offset. Using 64-bit int to allow files larger than 4GB. An
+// offset of -1 means a NULL string.
 typedef int64_t string_offset_t;
 
 // Type of an offset in the database file. Using 64-bit int to allow files
@@ -30,6 +33,12 @@ struct markov_export_node_t {
 	string_offset_t strings[MARKOV_ORDER];
 	int num_exits;
 	struct markov_export_exit_t exits[0];
+};
+
+// Start database format
+struct markov_export_start_t {
+	int num_start_states;
+	struct markov_export_exit_t start_states[0];
 };
 
 #pragma pack(pop)
